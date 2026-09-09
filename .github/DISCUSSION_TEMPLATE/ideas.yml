@@ -1,0 +1,17 @@
+title: "[Idea] "
+body:
+  - type: textarea
+    id: idea-description
+    attributes:
+      label: Idea Description
+      description: What is your idea? Please be as detailed as possible.
+      placeholder: I think it would be great if...
+    validations:
+      required: true
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Use Cases
+      description: How would you use this feature?
+    validations:
+      required: false

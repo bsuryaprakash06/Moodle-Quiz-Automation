@@ -1,5 +1,10 @@
 # LMS Quiz Automation
 
+![License](https://img.shields.io/github/license/bsuryaprakash06/Moodle-Quiz-Automation?style=flat-square)
+![Issues](https://img.shields.io/github/issues/bsuryaprakash06/Moodle-Quiz-Automation?style=flat-square)
+![Pull Requests](https://img.shields.io/github/issues-pr/bsuryaprakash06/Moodle-Quiz-Automation?style=flat-square)
+![Stars](https://img.shields.io/github/stars/bsuryaprakash06/Moodle-Quiz-Automation?style=flat-square)
+
 An automated Learning Management System solver utilizing Python, Playwright, and the Google Gemini API.
 
 If you find this project helpful, consider giving it a star on GitHub!
