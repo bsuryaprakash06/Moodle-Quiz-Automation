@@ -1,0 +1,7 @@
+{
+  "USERNAME": "your_username_here",
+  "PASSWORD": "your_password_here",
+  "GEMINI_API_KEY": "your_api_key_here",
+  "EXTENSION_PATH": "C:\\path\\to\\your\\unpacked\\extension",
+  "BROWSER_EXECUTABLE_PATH": "C:\\path\\to\\your\\browser.exe"
+}
