@@ -924,19 +924,40 @@ def main():
                         loc.click()
                         print("✅   Clicked main attempt button!")
                         
-                        # Handle confirmation modal if present
+                        # Handle confirmation modal if present (e.g. Time Limit)
+                        quiz_page.wait_for_timeout(1500) # Give modal time to animate in
+                        
                         modal_selectors = [
+                            "input#id_submitbutton",
                             "button#id_submitbutton",
+                            ".modal-dialog button:has-text('Start attempt')",
+                            ".modal-dialog input[value='Start attempt']",
                             "button:has-text('Start attempt')",
-                            "input[value='Start attempt']"
+                            "input[value='Start attempt']",
+                            ".moodle-dialogue-confirm input[type='button']"
                         ]
+                        
+                        clicked_modal = False
                         for m_sel in modal_selectors:
                             try:
                                 m_loc = quiz_page.locator(m_sel).last
-                                if m_loc.is_visible(timeout=1000):
+                                if m_loc.is_visible():
                                     m_loc.click()
-                                    print("✅   Clicked modal 'Start attempt'!")
+                                    print(f"✅   Clicked modal 'Start attempt' using selector: {m_sel}")
+                                    clicked_modal = True
+                                    quiz_page.wait_for_timeout(1000)
                                     break
+                            except Exception:
+                                pass
+                                
+                        if not clicked_modal:
+                            # Fallback check just in case it took longer
+                            try:
+                                fallback_loc = quiz_page.locator("button:has-text('Start attempt'), input[value='Start attempt']").last
+                                if fallback_loc.is_visible():
+                                    fallback_loc.click()
+                                    print("✅   Clicked modal 'Start attempt' (fallback)!")
+                                    quiz_page.wait_for_timeout(1000)
                             except Exception:
                                 pass
                                 
