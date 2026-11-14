@@ -1,9 +1,14 @@
 """
 Activity Selector Module for Poodle LMS Automation.
 
-Provides similarity-based activity classification and grouping:
+Provides an interactive GUI Checkbox Dialog (via Tkinter) and a CLI fallback
+to prompt the user on which activities to automate, featuring:
+- Master '(all)' option to select/deselect all activities
 - Similarity-based grouping (Read-Aloud, H5P, WordCards, Solo, Generic)
-- Group definition mappings for interactive selectors
+- Group-level toggles
+- Filter/search support
+- Pending-only quick filter
+- Seamless CLI fallback for headless or non-GUI environments
 """
 
 import sys
@@ -93,6 +98,440 @@ def group_activities(activities: list[dict]) -> list[dict]:
                 "items": items
             })
     return result
+
+
+class ActivitySelectorDialog:
+    """Tkinter-based GUI Checkbox dialog with grouping and '(all)' toggle."""
+
+    def __init__(self, activities: list[dict], course_name: str = "", tracker=None):
+        self.activities = activities
+        self.course_name = course_name or "Moodle Course"
+        self.tracker = tracker
+        self.grouped = group_activities(activities)
+        self.selected_activities: list[dict] = []
+        self.cancelled = False
+
+        # GUI Tkinter variables
+        self.all_var = None
+        self.item_vars: dict[int, any] = {}      # idx -> BooleanVar
+        self.group_vars: dict[str, any] = {}     # grp_id -> BooleanVar
+        self.item_widgets: dict[int, any] = {}   # idx -> frame widget for filtering
+        self.group_widgets: dict[str, any] = {}  # grp_id -> frame widget for filtering
+        self.highlight_widgets: dict[int, list] = {} # idx -> list of widgets to highlight
+        self.selection_label = None
+
+    def show(self) -> Optional[list[dict]]:
+        """Displays the dialog and returns the selected activities, or None if cancelled."""
+        try:
+            import tkinter as tk
+            from tkinter import ttk
+        except ImportError:
+            return None
+
+        root = tk.Tk()
+        root.title(f"Select Activities - {self.course_name}")
+        root.geometry("820x680")
+        root.minsize(680, 480)
+
+        # Style configuration
+        style = ttk.Style(root)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure("Header.TLabel", font=("Segoe UI", 13, "bold"))
+        style.configure("SubHeader.TLabel", font=("Segoe UI", 9))
+        style.configure("GroupHeader.TLabel", font=("Segoe UI", 10, "bold"), foreground="#004085")
+        style.configure("AllCheck.TCheckbutton", font=("Segoe UI", 11, "bold"))
+        style.configure("ItemCheck.TCheckbutton", font=("Segoe UI", 9))
+        style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"))
+
+        # Setup variables
+        self.all_var = tk.BooleanVar(value=True)
+
+        for grp in self.grouped:
+            self.group_vars[grp["id"]] = tk.BooleanVar(value=True)
+            for idx, act in grp["items"]:
+                is_restricted = act.get("is_restricted", False)
+                self.item_vars[idx] = tk.BooleanVar(value=not is_restricted)
+            all_in_grp = all(self.item_vars[i].get() for i, _ in grp["items"])
+            self.group_vars[grp["id"]].set(all_in_grp)
+        all_selected = all(v.get() for v in self.item_vars.values())
+        self.all_var.set(all_selected)
+
+        # 1. Top Header Frame
+        header_frame = ttk.Frame(root, padding="16 12 16 8")
+        header_frame.pack(fill=tk.X)
+
+        title_lbl = ttk.Label(
+            header_frame,
+            text=f"📚 Course: {self.course_name}",
+            style="Header.TLabel"
+        )
+        title_lbl.pack(anchor=tk.W)
+
+        sub_text = f"Discovered {len(self.activities)} activities across {len(self.grouped)} categories. Select the activities you wish to automate:"
+        sub_lbl = ttk.Label(header_frame, text=sub_text, style="SubHeader.TLabel", foreground="#555555")
+        sub_lbl.pack(anchor=tk.W, pady=(2, 8))
+
+        # 2. Controls & Filter Bar
+        ctrl_frame = ttk.Frame(root, padding="16 4 16 8")
+        ctrl_frame.pack(fill=tk.X)
+
+        # Master (all) Checkbox
+        all_cb = ttk.Checkbutton(
+            ctrl_frame,
+            text="(all)  Select / Deselect All Activities",
+            variable=self.all_var,
+            command=self._on_toggle_all,
+            style="AllCheck.TCheckbutton"
+        )
+        all_cb.pack(side=tk.LEFT)
+
+        # Quick action buttons
+        btn_frame = ttk.Frame(ctrl_frame)
+        btn_frame.pack(side=tk.RIGHT)
+
+        ttk.Button(btn_frame, text="Select Pending Only", command=self._select_pending_only).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="Select All", command=lambda: self._set_all(True)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="Clear All", command=lambda: self._set_all(False)).pack(side=tk.LEFT, padx=3)
+
+        # Search / Filter Bar
+        search_frame = ttk.Frame(root, padding="16 0 16 6")
+        search_frame.pack(fill=tk.X)
+
+        ttk.Label(search_frame, text="🔍 Filter:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *args: self._filter_activities())
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=35)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        ttk.Button(search_frame, text="✕ Clear", width=8, command=lambda: self.search_var.set("")).pack(side=tk.LEFT, padx=6)
+
+        # Separator line
+        ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=16, pady=4)
+
+        # 3. Scrollable Activities Canvas
+        container = ttk.Frame(root, padding="16 4 16 4")
+        container.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0, background="#ffffff")
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas, style="Card.TFrame")
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        scrollable_frame.bind("<Configure>", _on_frame_configure)
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Mousewheel scrolling support for Windows
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Populate Grouped Activities
+        for grp in self.grouped:
+            grp_id = grp["id"]
+            grp_box = tk.Frame(scrollable_frame, background="#f8f9fa", bd=1, relief=tk.SOLID, padx=10, pady=8)
+            grp_box.pack(fill=tk.X, expand=True, pady=6, padx=2)
+            self.group_widgets[grp_id] = grp_box
+
+            # Group Header
+            gh_frame = tk.Frame(grp_box, background="#e9ecef", padx=8, pady=4)
+            gh_frame.pack(fill=tk.X)
+
+            grp_cb = ttk.Checkbutton(
+                gh_frame,
+                text=f"{grp['name']} ({len(grp['items'])} activities)",
+                variable=self.group_vars[grp_id],
+                command=lambda gid=grp_id: self._on_toggle_group(gid),
+                style="GroupHeader.TLabel"
+            )
+            grp_cb.pack(side=tk.LEFT)
+
+            desc_lbl = tk.Label(
+                gh_frame,
+                text=grp["description"],
+                font=("Segoe UI", 8, "italic"),
+                fg="#6c757d",
+                bg="#e9ecef"
+            )
+            desc_lbl.pack(side=tk.RIGHT, padx=6)
+
+            # Items inside group
+            items_frame = tk.Frame(grp_box, background="#f8f9fa", pady=4)
+            items_frame.pack(fill=tk.X)
+
+            for idx, act in grp["items"]:
+                is_restricted = act.get("is_restricted", False)
+                is_checked = self.item_vars[idx].get()
+                bg_color = "#ffcccc" if (is_restricted and is_checked) else "#ffffff"
+
+                item_row = tk.Frame(items_frame, background=bg_color, padx=8, pady=4, bd=1, relief=tk.GROOVE)
+                item_row.pack(fill=tk.X, pady=2)
+                self.item_widgets[idx] = (item_row, act)
+
+                # Checkbox
+                cb = ttk.Checkbutton(
+                    item_row,
+                    variable=self.item_vars[idx],
+                    command=lambda i=idx, gid=grp_id: self._on_toggle_item(i, gid)
+                )
+                cb.pack(side=tk.LEFT, padx=(0, 6))
+
+                # Index & Title Label
+                num_tag = f"#{idx:02d}"
+                title_text = f"{num_tag}  [{act.get('type', 'act')}]  {act['title']}"
+                title_lbl = tk.Label(
+                    item_row,
+                    text=title_text,
+                    font=("Segoe UI", 9),
+                    anchor="w",
+                    bg=bg_color,
+                    cursor="hand2"
+                )
+                title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                title_lbl.bind("<Button-1>", lambda e, i=idx, gid=grp_id: self._toggle_single_item(i, gid))
+                
+                self.highlight_widgets[idx] = [item_row, title_lbl]
+
+                # Status Badge
+                is_done = False
+                score_str = ""
+                raw_score = self.tracker.get_score(act["url"]) if self.tracker else ""
+                if self.tracker and self.tracker.is_completed(act["url"]):
+                    is_done = True
+                    score_str = str(raw_score)
+
+                if is_done:
+                    badge_text = f"✓ COMPLETED ({score_str})" if score_str else "✓ COMPLETED"
+                    badge_lbl = tk.Label(
+                        item_row,
+                        text=badge_text,
+                        font=("Segoe UI", 8, "bold"),
+                        fg="#155724",
+                        bg="#d4edda",
+                        padx=6,
+                        pady=1
+                    )
+                elif raw_score:
+                    badge_lbl = tk.Label(
+                        item_row,
+                        text=f"● RETRY ({raw_score})",
+                        font=("Segoe UI", 8, "bold"),
+                        fg="#721c24",
+                        bg="#f8d7da",
+                        padx=6,
+                        pady=1
+                    )
+                else:
+                    badge_lbl = tk.Label(
+                        item_row,
+                        text="● PENDING",
+                        font=("Segoe UI", 8, "bold"),
+                        fg="#856404",
+                        bg="#fff3cd",
+                        padx=6,
+                        pady=1
+                    )
+                badge_lbl.pack(side=tk.RIGHT, padx=4)
+
+        # 4. Bottom Footer & Action Buttons
+        footer_frame = ttk.Frame(root, padding="16 10 16 14")
+        footer_frame.pack(fill=tk.X)
+
+        self.selection_label = ttk.Label(
+            footer_frame,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#004085"
+        )
+        self.selection_label.pack(side=tk.LEFT)
+
+        action_box = ttk.Frame(footer_frame)
+        action_box.pack(side=tk.RIGHT)
+
+        cancel_btn = ttk.Button(
+            action_box,
+            text="Cancel (Esc)",
+            command=lambda: self._close(cancelled=True, root=root)
+        )
+        cancel_btn.pack(side=tk.LEFT, padx=6)
+
+        start_btn = ttk.Button(
+            action_box,
+            text="🚀 Start Automation (Enter)",
+            style="Primary.TButton",
+            command=lambda: self._close(cancelled=False, root=root)
+        )
+        start_btn.pack(side=tk.LEFT)
+
+        # Keyboard bindings
+        root.bind("<Return>", lambda e: self._close(cancelled=False, root=root))
+        root.bind("<Escape>", lambda e: self._close(cancelled=True, root=root))
+
+        self._update_selection_count()
+
+        # Center Window on screen
+        root.update_idletasks()
+        w = root.winfo_width()
+        h = root.winfo_height()
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        root.geometry(f"{w}x{h}+{x}+{y}")
+
+        # Bring dialog to front
+        try:
+            root.lift()
+            root.attributes("-topmost", True)
+            root.after(300, lambda: root.attributes("-topmost", False))
+            root.focus_force()
+        except Exception:
+            pass
+
+        root.mainloop()
+
+        try:
+            canvas.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
+        if self.cancelled:
+            return None
+        return self.selected_activities
+
+    def _update_row_highlight(self, idx: int):
+        if idx not in self.highlight_widgets:
+            return
+        act = self.item_widgets[idx][1]
+        is_restricted = act.get("is_restricted", False)
+        if is_restricted:
+            is_checked = self.item_vars[idx].get()
+            bg_color = "#ffcccc" if is_checked else "#ffffff"
+            for w in self.highlight_widgets[idx]:
+                w.config(bg=bg_color)
+
+    def _toggle_single_item(self, idx: int, group_id: str):
+        var = self.item_vars.get(idx)
+        if var:
+            var.set(not var.get())
+            self._on_toggle_item(idx, group_id)
+
+    def _on_toggle_all(self):
+        val = self.all_var.get()
+        self._set_all(val)
+
+    def _set_all(self, val: bool):
+        self.all_var.set(val)
+        for g_var in self.group_vars.values():
+            g_var.set(val)
+        for idx, i_var in self.item_vars.items():
+            i_var.set(val)
+            self._update_row_highlight(idx)
+        self._update_selection_count()
+
+    def _select_pending_only(self):
+        for idx, act in enumerate(self.activities, 1):
+            is_done = self.tracker.is_completed(act["url"]) if self.tracker else False
+            self.item_vars[idx].set(not is_done)
+            self._update_row_highlight(idx)
+
+        for grp in self.grouped:
+            grp_id = grp["id"]
+            all_in_grp = all(self.item_vars[i].get() for i, _ in grp["items"])
+            self.group_vars[grp_id].set(all_in_grp)
+
+        all_selected = all(v.get() for v in self.item_vars.values())
+        self.all_var.set(all_selected)
+        self._update_selection_count()
+
+    def _on_toggle_group(self, grp_id: str):
+        val = self.group_vars[grp_id].get()
+        for grp in self.grouped:
+            if grp["id"] == grp_id:
+                for idx, _ in grp["items"]:
+                    self.item_vars[idx].set(val)
+                    self._update_row_highlight(idx)
+                break
+        all_selected = all(v.get() for v in self.item_vars.values())
+        self.all_var.set(all_selected)
+        self._update_selection_count()
+
+    def _on_toggle_item(self, idx: int, grp_id: str):
+        self._update_row_highlight(idx)
+        for grp in self.grouped:
+            if grp["id"] == grp_id:
+                all_grp = all(self.item_vars[i].get() for i, _ in grp["items"])
+                self.group_vars[grp_id].set(all_grp)
+                break
+        all_selected = all(v.get() for v in self.item_vars.values())
+        self.all_var.set(all_selected)
+        self._update_selection_count()
+
+    def _filter_activities(self):
+        query = (self.search_var.get() or "").strip().lower()
+        for grp in self.grouped:
+            grp_id = grp["id"]
+            any_visible = False
+            for idx, act in grp["items"]:
+                row_widget, _ = self.item_widgets[idx]
+                text_match = (
+                    query in act["title"].lower()
+                    or query in act.get("type", "").lower()
+                    or query in f"#{idx}"
+                )
+                if text_match or not query:
+                    row_widget.pack(fill="x", pady=2)
+                    any_visible = True
+                else:
+                    row_widget.pack_forget()
+
+            grp_widget = self.group_widgets.get(grp_id)
+            if grp_widget:
+                if any_visible:
+                    grp_widget.pack(fill="x", expand=True, pady=6, padx=2)
+                else:
+                    grp_widget.pack_forget()
+
+    def _update_selection_count(self):
+        if not self.selection_label:
+            return
+        total = len(self.activities)
+        selected = sum(1 for v in self.item_vars.values() if v.get())
+        pending_count = 0
+        if self.tracker:
+            pending_count = sum(
+                1 for i, act in enumerate(self.activities, 1)
+                if self.item_vars[i].get() and not self.tracker.is_completed(act["url"])
+            )
+            self.selection_label.config(
+                text=f"Selected: {selected} / {total} activities ({pending_count} pending)"
+            )
+        else:
+            self.selection_label.config(text=f"Selected: {selected} / {total} activities")
+
+    def _close(self, cancelled: bool, root):
+        self.cancelled = cancelled
+        if not cancelled:
+            self.selected_activities = [
+                act for idx, act in enumerate(self.activities, 1)
+                if self.item_vars[idx].get()
+            ]
+        root.destroy()
 
 
 def parse_cli_selection(user_input: str, total_count: int, activities: list[dict], tracker=None) -> list[int]:
@@ -212,7 +651,7 @@ def prompt_activity_selection(
 ) -> list[dict]:
     """
     Prompts the user to select which activities to automate.
-    Attempts CLI selector based on configuration.
+    Attempts GUI Checkbox Dialog first, smoothly falling back to CLI selector.
     """
     if not activities:
         return []
@@ -221,4 +660,24 @@ def prompt_activity_selection(
         print(f"\n[Activity Selector] --all flag specified. Automatically selected all {len(activities)} activities.")
         return list(activities)
 
-    return cli_activity_selector(activities, course_name=course_name, tracker=tracker)
+    # If headless or CLI forced, use CLI selector
+    if headless or force_cli:
+        return cli_activity_selector(activities, course_name=course_name, tracker=tracker)
+
+    # Attempt Tkinter GUI Dialog
+    try:
+        dialog = ActivitySelectorDialog(activities, course_name=course_name, tracker=tracker)
+        result = dialog.show()
+        if result is not None:
+            if not result:
+                print("\n[Activity Selector] 0 activities selected in dialog. Skipping course activities.")
+            else:
+                print(f"\n[Activity Selector] Dialog selection confirmed: {len(result)} / {len(activities)} activities.")
+            return result
+        else:
+            # User clicked cancel in dialog
+            print("\n[Activity Selector] Selection cancelled by user in dialog.")
+            return []
+    except Exception as e:
+        print(f"\n[Activity Selector] GUI dialog unavailable ({e}). Falling back to interactive CLI mode.")
+        return cli_activity_selector(activities, course_name=course_name, tracker=tracker)
