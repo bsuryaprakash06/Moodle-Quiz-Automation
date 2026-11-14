@@ -526,7 +526,7 @@ def go_next(page):
 
     finish_selectors = [
         "input[value='Finish attempt ...']", 
-        "input[value='Finish attempt']", 
+        "input[value='Finish attempt']",
         "button:has-text('Finish attempt ...')", 
         "button:has-text('Finish attempt')",
         "input[name='finishattempt']",
@@ -549,6 +549,8 @@ def go_next(page):
             page.wait_for_load_state("domcontentloaded")
         print(" Finish attempt clicked")
         return "finish"
+
+
 
     print(" No navigation button found.")
     return "none"
@@ -713,23 +715,65 @@ def main():
 
         if "/mod/quiz/view.php" in course_url or "/mod/quiz/attempt.php" in course_url:
             print(" Direct quiz URL detected!")
-            quiz_urls = [course_url]
+            quiz_urls = [{"url": course_url, "title": "Direct Quiz"}]
         else:
             print(" Searching for quizzes...")
             quiz_urls = quiz_page.evaluate('''() => {
                 const keywords = ['quiz', 'practice quiz', 'mcq', 'skill assessments', 'viva'];
+                const excludePatterns = [
+                    /(?:^|\\W)cia(?:\\d|\\W|$)/i,
+                    /(?:^|\\W)model(?:\\d|\\W|$)/i,
+                    /model practical/i,
+                    /practical/i,
+                    /semester/i,
+                    /examination/i,
+                    /exam/i,
+                    /(?:^|\\W)lab(?:\\d|\\W|$)/i,
+                    /password/i
+                ];
                 const links = Array.from(document.querySelectorAll('a[href*="/mod/quiz/view.php"]'));
                 const matched = [];
+                const seenUrls = new Set();
+                
                 for (const link of links) {
+                    if (seenUrls.has(link.href)) continue;
+                    
                     const text = link.innerText.toLowerCase();
-                    if (keywords.some(k => text.includes(k))) {
-                        matched.push(link.href);
+                    const activityContainer = link.closest('.activity, .activity-item, li.activity, li');
+                    const sectionContainer = link.closest('.section, li.section, .course-section');
+                    
+                    const containerText = activityContainer ? activityContainer.innerText.toLowerCase() : "";
+                    const sectionText = sectionContainer ? sectionContainer.innerText.toLowerCase() : "";
+                    const titleText = (link.title || "").toLowerCase();
+                    
+                    const fullContext = text + " " + containerText + " " + sectionText + " " + titleText;
+                    
+                    let title = link.innerText.trim();
+                    if (!title && activityContainer) {
+                        title = activityContainer.innerText.split('\\n')[0].trim();
+                    }
+                    if (!title) {
+                        title = link.href;
+                    }
+                    
+                    if (keywords.some(k => text.includes(k) || titleText.includes(k))) {
+                        let hasExcluded = false;
+                        for (const regex of excludePatterns) {
+                            if (regex.test(fullContext)) {
+                                hasExcluded = true;
+                                break;
+                            }
+                        }
+                        if (hasExcluded) {
+                            matched.push({url: link.href, title: "⚠️ " + title, is_restricted: true});
+                        } else {
+                            matched.push({url: link.href, title: title, is_restricted: false});
+                        }
+                        seenUrls.add(link.href);
                     }
                 }
                 return matched;
             }''')
-            
-            quiz_urls = list(dict.fromkeys(quiz_urls))
         
         if PERFORMANCE["benchmark"]:
             benchmark.stop("Scrape Course Quizzes")
@@ -740,16 +784,64 @@ def main():
             return
             
         print(f" Found {len(quiz_urls)} quizzes to attempt!")
-        for url in quiz_urls:
-            print(f"  - {url}")
+        for q in quiz_urls:
+            print(f"  - [{q['title']}] {q['url']}")
+
+        # Let user select which quizzes to attempt via GUI
+        try:
+            import sys
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            from utils.activity_selector import prompt_activity_selection
+            
+            # The selector will display a Tkinter window with checkboxes
+            quiz_urls = prompt_activity_selection(
+                quiz_urls, 
+                course_name="Moodle Quiz Automation",
+                headless=False
+            )
+            
+            if quiz_urls:
+                restricted_selected = any(q.get("is_restricted", False) for q in quiz_urls)
+                if restricted_selected:
+                    try:
+                        import tkinter as tk
+                        from tkinter import messagebox
+                        root = tk.Tk()
+                        root.withdraw()
+                        root.attributes("-topmost", True)
+                        result = messagebox.askyesno(
+                            "Warning",
+                            "Potential End - Semester Examination Quiz (Included)\nAre you sure you want to continue?",
+                            parent=root
+                        )
+                        root.destroy()
+                        if not result:
+                            print("❌ Automation cancelled by user due to restricted quiz selection.")
+                            context.close()
+                            return
+                    except ImportError:
+                        ans = input("\n⚠️ Potential End - Semester Examination Quiz (Included)\nAre you sure you want to continue? (y/n): ")
+                        if ans.lower() not in ['y', 'yes']:
+                            print("❌ Automation cancelled by user due to restricted quiz selection.")
+                            context.close()
+                            return
+            if not quiz_urls:
+                print("❌  No quizzes selected. Exiting.")
+                context.close()
+                return
+        except ImportError as e:
+            print(f"⚠️  Could not load GUI selector ({e}). Proceeding with all {len(quiz_urls)} quizzes.")
 
         skipped_seb_quizzes = []
 
-        for current_quiz_url in quiz_urls:
+        for q in quiz_urls:
+            current_quiz_url = q['url']
+            quiz_title = q['title']
+            
             if PERFORMANCE["benchmark"]:
                 benchmark.start(f"Quiz Execution ({current_quiz_url.split('id=')[-1]})")
 
-            print(f"\n Navigating to Quiz: {current_quiz_url}")
+            print(f"\n Navigating to Quiz: [{quiz_title}] {current_quiz_url}")
             quiz_page.goto(current_quiz_url, wait_until="domcontentloaded")
             
             # Dynamic SEB check
@@ -1071,16 +1163,7 @@ def main():
 
                 result = go_next(quiz_page)
 
-                if result == "finish":
-                    print(" Summary page reached...")
-                    if all_passed:
-                        handle_final_submission(quiz_page)
-                    else:
-                        print("❌  At least 1 question failed. NOT submitting.")
-                        print("❗ 1 failed")
-                    break
-
-                elif result == "none":
+                if result == "none":
                     print("❌  Can't navigate. Stopping.")
                     if not all_passed:
                         print("❌  At least 1 question failed. NOT submitting.")
