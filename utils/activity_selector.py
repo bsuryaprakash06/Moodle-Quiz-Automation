@@ -8,6 +8,7 @@ to prompt the user on which activities to automate, featuring:
 - Group-level toggles
 - Filter/search support
 - Pending-only quick filter
+- Seamless dynamic theme switching: Dark (Default) / Light / Transparent (Glass)
 - Seamless CLI fallback for headless or non-GUI environments
 """
 
@@ -54,6 +55,89 @@ GROUP_DEFINITIONS = [
     }
 ]
 
+THEME_ORDER = ["dark", "light", "transparent"]
+
+THEME_LABELS = {
+    "dark": "🌙 Dark",
+    "light": "☀️ Light",
+    "transparent": "🪟 Transparent"
+}
+
+THEME_PALETTES = {
+    "dark": {
+        "alpha": 1.0,
+        "bg_dark": "#181825",
+        "card_bg": "#1e1e2e",
+        "header_bg": "#28283d",
+        "row_bg": "#1e1e2e",
+        "row_border": "#313244",
+        "text_primary": "#cdd6f4",
+        "text_muted": "#a6adc8",
+        "accent_blue": "#89b4fa",
+        "entry_bg": "#26263a",
+        "entry_fg": "#ffffff",
+        "btn_bg": "#313244",
+        "btn_fg": "#cdd6f4",
+        "btn_active": "#45475a",
+        "primary_bg": "#3b82f6",
+        "primary_fg": "#ffffff",
+        "restricted_bg": "#451a24",
+        "restricted_fg": "#f38ba8",
+        "restricted_border": "#f38ba8",
+        "badge_done": {"bg": "#1e3a2f", "fg": "#a6e3a1"},
+        "badge_retry": {"bg": "#4a1a24", "fg": "#f38ba8"},
+        "badge_pending": {"bg": "#3d3215", "fg": "#f9e2af"}
+    },
+    "light": {
+        "alpha": 1.0,
+        "bg_dark": "#f8f9fa",
+        "card_bg": "#ffffff",
+        "header_bg": "#e9ecef",
+        "row_bg": "#ffffff",
+        "row_border": "#dee2e6",
+        "text_primary": "#212529",
+        "text_muted": "#6c757d",
+        "accent_blue": "#0056b3",
+        "entry_bg": "#ffffff",
+        "entry_fg": "#212529",
+        "btn_bg": "#e2e6ea",
+        "btn_fg": "#212529",
+        "btn_active": "#dbe0e5",
+        "primary_bg": "#0d6efd",
+        "primary_fg": "#ffffff",
+        "restricted_bg": "#ffcccc",
+        "restricted_fg": "#721c24",
+        "restricted_border": "#dc3545",
+        "badge_done": {"bg": "#d4edda", "fg": "#155724"},
+        "badge_retry": {"bg": "#f8d7da", "fg": "#721c24"},
+        "badge_pending": {"bg": "#fff3cd", "fg": "#856404"}
+    },
+    "transparent": {
+        "alpha": 0.85,
+        "bg_dark": "#11111b",
+        "card_bg": "#181825",
+        "header_bg": "#1e1e2e",
+        "row_bg": "#181825",
+        "row_border": "#45475a",
+        "text_primary": "#ffffff",
+        "text_muted": "#bac2de",
+        "accent_blue": "#89b4fa",
+        "entry_bg": "#1e1e2e",
+        "entry_fg": "#ffffff",
+        "btn_bg": "#313244",
+        "btn_fg": "#cdd6f4",
+        "btn_active": "#45475a",
+        "primary_bg": "#3b82f6",
+        "primary_fg": "#ffffff",
+        "restricted_bg": "#451a24",
+        "restricted_fg": "#f38ba8",
+        "restricted_border": "#f38ba8",
+        "badge_done": {"bg": "#1e3a2f", "fg": "#a6e3a1"},
+        "badge_retry": {"bg": "#4a1a24", "fg": "#f38ba8"},
+        "badge_pending": {"bg": "#3d3215", "fg": "#f9e2af"}
+    }
+}
+
 
 def classify_activity(act: dict) -> str:
     """Returns the group ID for an activity based on its type or URL."""
@@ -70,16 +154,7 @@ def classify_activity(act: dict) -> str:
 def group_activities(activities: list[dict]) -> list[dict]:
     """
     Groups activities into structured similarity buckets with global 1-based indexing.
-    Returns a list of group dictionaries:
-    [
-        {
-            "id": "readaloud",
-            "name": "Read - Aloud",
-            "description": "...",
-            "items": [(1, act1), (2, act2)]
-        },
-        ...
-    ]
+    Returns a list of group dictionaries.
     """
     buckets = {grp["id"]: [] for grp in GROUP_DEFINITIONS}
 
@@ -101,7 +176,7 @@ def group_activities(activities: list[dict]) -> list[dict]:
 
 
 class ActivitySelectorDialog:
-    """Tkinter-based GUI Checkbox dialog with grouping and '(all)' toggle."""
+    """Tkinter-based GUI Checkbox dialog with grouping, filter, and dynamic theme switching."""
 
     def __init__(self, activities: list[dict], course_name: str = "", tracker=None):
         self.activities = activities
@@ -111,12 +186,25 @@ class ActivitySelectorDialog:
         self.selected_activities: list[dict] = []
         self.cancelled = False
 
+        # Theme state (Default: Dark)
+        self.current_theme = "dark"
+        self.root = None
+        self.style = None
+        self.theme_btn = None
+        self.canvas = None
+        self.scrollable_frame = None
+        self.search_entry = None
+        self.filter_lbl = None
+        self.container_frames = []
+        self.group_ui_items = []
+        self.activity_ui_items = []
+
         # GUI Tkinter variables
         self.all_var = None
-        self.item_vars: dict[int, any] = {}      # idx -> BooleanVar
-        self.group_vars: dict[str, any] = {}     # grp_id -> BooleanVar
-        self.item_widgets: dict[int, any] = {}   # idx -> frame widget for filtering
-        self.group_widgets: dict[str, any] = {}  # grp_id -> frame widget for filtering
+        self.item_vars: dict[int, any] = {}          # idx -> BooleanVar
+        self.group_vars: dict[str, any] = {}         # grp_id -> BooleanVar
+        self.item_widgets: dict[int, any] = {}       # idx -> (row_widget, act) for filtering
+        self.group_widgets: dict[str, any] = {}      # grp_id -> frame widget for filtering
         self.highlight_widgets: dict[int, list] = {} # idx -> list of widgets to highlight
         self.selection_label = None
 
@@ -129,23 +217,22 @@ class ActivitySelectorDialog:
             return None
 
         root = tk.Tk()
+        self.root = root
         root.title(f"Select Activities - {self.course_name}")
         root.geometry("820x680")
         root.minsize(680, 480)
 
         # Style configuration
         style = ttk.Style(root)
+        self.style = style
         try:
             style.theme_use("clam")
         except Exception:
             pass
 
-        style.configure("Header.TLabel", font=("Segoe UI", 13, "bold"))
-        style.configure("SubHeader.TLabel", font=("Segoe UI", 9))
-        style.configure("GroupHeader.TLabel", font=("Segoe UI", 10, "bold"), foreground="#004085")
-        style.configure("AllCheck.TCheckbutton", font=("Segoe UI", 11, "bold"))
-        style.configure("ItemCheck.TCheckbutton", font=("Segoe UI", 9))
-        style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"))
+        self.container_frames.clear()
+        self.group_ui_items.clear()
+        self.activity_ui_items.clear()
 
         # Setup variables
         self.all_var = tk.BooleanVar(value=True)
@@ -161,23 +248,42 @@ class ActivitySelectorDialog:
         self.all_var.set(all_selected)
 
         # 1. Top Header Frame
-        header_frame = ttk.Frame(root, padding="16 12 16 8")
+        header_frame = tk.Frame(root, padx=16, pady=10)
         header_frame.pack(fill=tk.X)
+        self.container_frames.append(header_frame)
+
+        header_left = tk.Frame(header_frame)
+        header_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.container_frames.append(header_left)
 
         title_lbl = ttk.Label(
-            header_frame,
+            header_left,
             text=f"📚 Course: {self.course_name}",
             style="Header.TLabel"
         )
         title_lbl.pack(anchor=tk.W)
 
         sub_text = f"Discovered {len(self.activities)} activities across {len(self.grouped)} categories. Select the activities you wish to automate:"
-        sub_lbl = ttk.Label(header_frame, text=sub_text, style="SubHeader.TLabel", foreground="#555555")
-        sub_lbl.pack(anchor=tk.W, pady=(2, 8))
+        sub_lbl = ttk.Label(header_left, text=sub_text, style="SubHeader.TLabel")
+        sub_lbl.pack(anchor=tk.W, pady=(2, 4))
+
+        # Right: Theme Toggle Button (Light / Dark / Transparent)
+        header_right = tk.Frame(header_frame)
+        header_right.pack(side=tk.RIGHT, anchor=tk.E, padx=(8, 0))
+        self.container_frames.append(header_right)
+
+        self.theme_btn = ttk.Button(
+            header_right,
+            text=f"🎨 {THEME_LABELS[self.current_theme]}",
+            style="Action.TButton",
+            command=self._cycle_theme
+        )
+        self.theme_btn.pack(side=tk.RIGHT)
 
         # 2. Controls & Filter Bar
-        ctrl_frame = ttk.Frame(root, padding="16 4 16 8")
+        ctrl_frame = tk.Frame(root, padx=16, pady=4)
         ctrl_frame.pack(fill=tk.X)
+        self.container_frames.append(ctrl_frame)
 
         # Master (all) Checkbox
         all_cb = ttk.Checkbutton(
@@ -190,66 +296,79 @@ class ActivitySelectorDialog:
         all_cb.pack(side=tk.LEFT)
 
         # Quick action buttons
-        btn_frame = ttk.Frame(ctrl_frame)
+        btn_frame = tk.Frame(ctrl_frame)
         btn_frame.pack(side=tk.RIGHT)
+        self.container_frames.append(btn_frame)
 
-        ttk.Button(btn_frame, text="Select Pending Only", command=self._select_pending_only).pack(side=tk.LEFT, padx=3)
-        ttk.Button(btn_frame, text="Select All", command=lambda: self._set_all(True)).pack(side=tk.LEFT, padx=3)
-        ttk.Button(btn_frame, text="Clear All", command=lambda: self._set_all(False)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="Select Pending Only", style="Action.TButton", command=self._select_pending_only).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="Select All", style="Action.TButton", command=lambda: self._set_all(True)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_frame, text="Clear All", style="Action.TButton", command=lambda: self._set_all(False)).pack(side=tk.LEFT, padx=3)
 
         # Search / Filter Bar
-        search_frame = ttk.Frame(root, padding="16 0 16 6")
+        search_frame = tk.Frame(root, padx=16, pady=4)
         search_frame.pack(fill=tk.X)
+        self.container_frames.append(search_frame)
 
-        ttk.Label(search_frame, text="🔍 Filter:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        self.filter_lbl = tk.Label(search_frame, text="🔍 Filter:", font=("Segoe UI", 9))
+        self.filter_lbl.pack(side=tk.LEFT, padx=(0, 6))
+
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *args: self._filter_activities())
-        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=35)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.search_entry = tk.Entry(
+            search_frame,
+            textvariable=self.search_var,
+            font=("Segoe UI", 9),
+            relief=tk.FLAT,
+            highlightthickness=1
+        )
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Button(search_frame, text="✕ Clear", width=8, command=lambda: self.search_var.set("")).pack(side=tk.LEFT, padx=6)
+        ttk.Button(search_frame, text="✕ Clear", width=8, style="Action.TButton", command=lambda: self.search_var.set("")).pack(side=tk.LEFT, padx=6)
 
         # Separator line
-        ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=16, pady=4)
+        sep = tk.Frame(root, height=1)
+        sep.pack(fill=tk.X, padx=16, pady=6)
+        self.container_frames.append(sep)
 
         # 3. Scrollable Activities Canvas
-        container = ttk.Frame(root, padding="16 4 16 4")
+        container = tk.Frame(root, padx=16, pady=4)
         container.pack(fill=tk.BOTH, expand=True)
+        self.container_frames.append(container)
 
-        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0, background="#ffffff")
-        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas, style="Card.TFrame")
+        self.canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.scrollable_frame = tk.Frame(self.canvas)
 
         def _on_frame_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
-        scrollable_frame.bind("<Configure>", _on_frame_configure)
-        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        self.scrollable_frame.bind("<Configure>", _on_frame_configure)
+        canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
 
         def _on_canvas_configure(event):
-            canvas.itemconfig(canvas_window, width=event.width)
+            self.canvas.itemconfig(canvas_window, width=event.width)
 
-        canvas.bind("<Configure>", _on_canvas_configure)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.bind("<Configure>", _on_canvas_configure)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
 
         # Mousewheel scrolling support for Windows
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Populate Grouped Activities
         for grp in self.grouped:
             grp_id = grp["id"]
-            grp_box = tk.Frame(scrollable_frame, background="#f8f9fa", bd=1, relief=tk.SOLID, padx=10, pady=8)
+            grp_box = tk.Frame(self.scrollable_frame, bd=1, relief=tk.SOLID, padx=10, pady=8, highlightthickness=1)
             grp_box.pack(fill=tk.X, expand=True, pady=6, padx=2)
             self.group_widgets[grp_id] = grp_box
 
             # Group Header
-            gh_frame = tk.Frame(grp_box, background="#e9ecef", padx=8, pady=4)
+            gh_frame = tk.Frame(grp_box, padx=8, pady=4)
             gh_frame.pack(fill=tk.X)
 
             grp_cb = ttk.Checkbutton(
@@ -257,29 +376,25 @@ class ActivitySelectorDialog:
                 text=f"{grp['name']} ({len(grp['items'])} activities)",
                 variable=self.group_vars[grp_id],
                 command=lambda gid=grp_id: self._on_toggle_group(gid),
-                style="GroupHeader.TLabel"
+                style="GroupHeader.TCheckbutton"
             )
             grp_cb.pack(side=tk.LEFT)
 
             desc_lbl = tk.Label(
                 gh_frame,
                 text=grp["description"],
-                font=("Segoe UI", 8, "italic"),
-                fg="#6c757d",
-                bg="#e9ecef"
+                font=("Segoe UI", 8, "italic")
             )
             desc_lbl.pack(side=tk.RIGHT, padx=6)
 
             # Items inside group
-            items_frame = tk.Frame(grp_box, background="#f8f9fa", pady=4)
+            items_frame = tk.Frame(grp_box, pady=4)
             items_frame.pack(fill=tk.X)
 
-            for idx, act in grp["items"]:
-                is_restricted = act.get("is_restricted", False)
-                is_checked = self.item_vars[idx].get()
-                bg_color = "#ffcccc" if (is_restricted and is_checked) else "#ffffff"
+            self.group_ui_items.append((grp_box, gh_frame, grp_cb, desc_lbl, items_frame))
 
-                item_row = tk.Frame(items_frame, background=bg_color, padx=8, pady=4, bd=1, relief=tk.GROOVE)
+            for idx, act in grp["items"]:
+                item_row = tk.Frame(items_frame, padx=8, pady=4, bd=1, relief=tk.SOLID, highlightthickness=1)
                 item_row.pack(fill=tk.X, pady=2)
                 self.item_widgets[idx] = (item_row, act)
 
@@ -287,6 +402,7 @@ class ActivitySelectorDialog:
                 cb = ttk.Checkbutton(
                     item_row,
                     variable=self.item_vars[idx],
+                    style="ItemCheck.TCheckbutton",
                     command=lambda i=idx, gid=grp_id: self._on_toggle_item(i, gid)
                 )
                 cb.pack(side=tk.LEFT, padx=(0, 6))
@@ -299,13 +415,12 @@ class ActivitySelectorDialog:
                     text=title_text,
                     font=("Segoe UI", 9),
                     anchor="w",
-                    bg=bg_color,
                     cursor="hand2"
                 )
                 title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
                 title_lbl.bind("<Button-1>", lambda e, i=idx, gid=grp_id: self._toggle_single_item(i, gid))
-                
-                self.highlight_widgets[idx] = [item_row, title_lbl]
+
+                self.highlight_widgets[idx] = [item_row, title_lbl, cb]
 
                 # Status Badge
                 is_done = False
@@ -317,55 +432,42 @@ class ActivitySelectorDialog:
 
                 if is_done:
                     badge_text = f"✓ COMPLETED ({score_str})" if score_str else "✓ COMPLETED"
-                    badge_lbl = tk.Label(
-                        item_row,
-                        text=badge_text,
-                        font=("Segoe UI", 8, "bold"),
-                        fg="#155724",
-                        bg="#d4edda",
-                        padx=6,
-                        pady=1
-                    )
                 elif raw_score:
-                    badge_lbl = tk.Label(
-                        item_row,
-                        text=f"● RETRY ({raw_score})",
-                        font=("Segoe UI", 8, "bold"),
-                        fg="#721c24",
-                        bg="#f8d7da",
-                        padx=6,
-                        pady=1
-                    )
+                    badge_text = f"● RETRY ({raw_score})"
                 else:
-                    badge_lbl = tk.Label(
-                        item_row,
-                        text="● PENDING",
-                        font=("Segoe UI", 8, "bold"),
-                        fg="#856404",
-                        bg="#fff3cd",
-                        padx=6,
-                        pady=1
-                    )
+                    badge_text = "● PENDING"
+
+                badge_lbl = tk.Label(
+                    item_row,
+                    text=badge_text,
+                    font=("Segoe UI", 8, "bold"),
+                    padx=6,
+                    pady=1
+                )
                 badge_lbl.pack(side=tk.RIGHT, padx=4)
 
+                self.activity_ui_items.append((idx, item_row, title_lbl, cb, badge_lbl, act))
+
         # 4. Bottom Footer & Action Buttons
-        footer_frame = ttk.Frame(root, padding="16 10 16 14")
+        footer_frame = tk.Frame(root, padx=16, pady=12)
         footer_frame.pack(fill=tk.X)
+        self.container_frames.append(footer_frame)
 
         self.selection_label = ttk.Label(
             footer_frame,
             text="",
-            font=("Segoe UI", 10, "bold"),
-            foreground="#004085"
+            style="Selection.TLabel"
         )
         self.selection_label.pack(side=tk.LEFT)
 
-        action_box = ttk.Frame(footer_frame)
+        action_box = tk.Frame(footer_frame)
         action_box.pack(side=tk.RIGHT)
+        self.container_frames.append(action_box)
 
         cancel_btn = ttk.Button(
             action_box,
             text="Cancel (Esc)",
+            style="Action.TButton",
             command=lambda: self._close(cancelled=True, root=root)
         )
         cancel_btn.pack(side=tk.LEFT, padx=6)
@@ -377,6 +479,9 @@ class ActivitySelectorDialog:
             command=lambda: self._close(cancelled=False, root=root)
         )
         start_btn.pack(side=tk.LEFT)
+
+        # Apply Default Theme (Dark)
+        self.apply_theme(self.current_theme)
 
         # Keyboard bindings
         root.bind("<Return>", lambda e: self._close(cancelled=False, root=root))
@@ -414,16 +519,145 @@ class ActivitySelectorDialog:
             return None
         return self.selected_activities
 
+    def _cycle_theme(self):
+        """Cycles through Dark -> Light -> Transparent -> Dark."""
+        curr_idx = THEME_ORDER.index(self.current_theme)
+        next_theme = THEME_ORDER[(curr_idx + 1) % len(THEME_ORDER)]
+        self.apply_theme(next_theme)
+
+    def apply_theme(self, theme_name: str):
+        """Applies colors, styles, and window transparency for the given theme."""
+        if theme_name not in THEME_PALETTES:
+            return
+        self.current_theme = theme_name
+        p = THEME_PALETTES[theme_name]
+
+        # 1. Window & Opacity
+        if self.root:
+            self.root.configure(background=p["bg_dark"])
+            try:
+                self.root.attributes("-alpha", p["alpha"])
+            except Exception:
+                pass
+
+        # 2. Reconfigure TTK styles
+        if self.style:
+            try:
+                self.style.configure(".", background=p["bg_dark"], foreground=p["text_primary"])
+                self.style.configure("TFrame", background=p["bg_dark"])
+                self.style.configure("TLabel", background=p["bg_dark"], foreground=p["text_primary"])
+                self.style.configure("TSeparator", background=p["row_border"])
+
+                self.style.configure("Header.TLabel", font=("Segoe UI", 13, "bold"), foreground=p["text_primary"], background=p["bg_dark"])
+                self.style.configure("SubHeader.TLabel", font=("Segoe UI", 9), foreground=p["text_muted"], background=p["bg_dark"])
+                self.style.configure("GroupHeader.TCheckbutton", font=("Segoe UI", 10, "bold"), foreground=p["accent_blue"], background=p["header_bg"])
+                self.style.map("GroupHeader.TCheckbutton", background=[("active", p["header_bg"])], foreground=[("active", p["accent_blue"])])
+
+                self.style.configure("AllCheck.TCheckbutton", font=("Segoe UI", 11, "bold"), foreground=p["text_primary"], background=p["bg_dark"])
+                self.style.map("AllCheck.TCheckbutton", background=[("active", p["bg_dark"])], foreground=[("active", p["text_primary"])])
+
+                self.style.configure("ItemCheck.TCheckbutton", background=p["row_bg"], foreground=p["text_primary"])
+                self.style.map("ItemCheck.TCheckbutton", background=[("active", p["row_bg"])], foreground=[("active", p["text_primary"])])
+
+                self.style.configure("Action.TButton", font=("Segoe UI", 9), background=p["btn_bg"], foreground=p["btn_fg"], borderwidth=1, focuscolor="none")
+                self.style.map("Action.TButton", background=[("active", p["btn_active"])], foreground=[("active", p["btn_fg"])])
+
+                self.style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"), background=p["primary_bg"], foreground=p["primary_fg"], borderwidth=0, focuscolor="none")
+                self.style.map("Primary.TButton", background=[("active", p["primary_bg"])], foreground=[("active", p["primary_fg"])])
+
+                self.style.configure("Selection.TLabel", font=("Segoe UI", 10, "bold"), foreground=p["accent_blue"], background=p["bg_dark"])
+            except Exception:
+                pass
+
+        # 3. Theme Toggle Button Label
+        if self.theme_btn:
+            self.theme_btn.config(text=f"🎨 {THEME_LABELS[theme_name]}")
+
+        # 4. Container Frames & Canvas
+        for frame in self.container_frames:
+            try:
+                frame.configure(background=p["bg_dark"])
+            except Exception:
+                pass
+
+        if self.canvas:
+            self.canvas.configure(background=p["bg_dark"])
+        if self.scrollable_frame:
+            self.scrollable_frame.configure(background=p["bg_dark"])
+
+        # 5. Search Entry & Filter Label
+        if self.search_entry:
+            try:
+                self.search_entry.configure(
+                    bg=p["entry_bg"],
+                    fg=p["entry_fg"],
+                    insertbackground=p["entry_fg"],
+                    highlightbackground=p["row_border"],
+                    highlightcolor=p["accent_blue"]
+                )
+            except Exception:
+                pass
+
+        if self.filter_lbl:
+            try:
+                self.filter_lbl.configure(foreground=p["text_primary"], background=p["bg_dark"])
+            except Exception:
+                pass
+
+        # 6. Group UI components
+        for grp_box, gh_frame, grp_cb, desc_lbl, items_frame in self.group_ui_items:
+            try:
+                grp_box.configure(background=p["card_bg"], highlightbackground=p["row_border"])
+                gh_frame.configure(background=p["header_bg"])
+                desc_lbl.configure(fg=p["text_muted"], bg=p["header_bg"])
+                items_frame.configure(background=p["card_bg"])
+            except Exception:
+                pass
+
+        # 7. Activity Items & Badges
+        for idx, item_row, title_lbl, cb, badge_lbl, act in self.activity_ui_items:
+            try:
+                is_restricted = act.get("is_restricted", False)
+                is_checked = self.item_vars[idx].get()
+                bg_color = p["restricted_bg"] if (is_restricted and is_checked) else p["row_bg"]
+                border_color = p["restricted_border"] if (is_restricted and is_checked) else p["row_border"]
+                fg_title = p["restricted_fg"] if (is_restricted and is_checked) else p["text_primary"]
+
+                item_row.configure(background=bg_color, highlightbackground=border_color)
+                title_lbl.configure(bg=bg_color, fg=fg_title)
+
+                # Badge update
+                is_done = False
+                raw_score = self.tracker.get_score(act["url"]) if self.tracker else ""
+                if self.tracker and self.tracker.is_completed(act["url"]):
+                    is_done = True
+
+                if is_done:
+                    badge_lbl.configure(bg=p["badge_done"]["bg"], fg=p["badge_done"]["fg"])
+                elif raw_score:
+                    badge_lbl.configure(bg=p["badge_retry"]["bg"], fg=p["badge_retry"]["fg"])
+                else:
+                    badge_lbl.configure(bg=p["badge_pending"]["bg"], fg=p["badge_pending"]["fg"])
+            except Exception:
+                pass
+
+        self._update_selection_count()
+
     def _update_row_highlight(self, idx: int):
         if idx not in self.highlight_widgets:
             return
         act = self.item_widgets[idx][1]
         is_restricted = act.get("is_restricted", False)
+        p = THEME_PALETTES.get(self.current_theme, THEME_PALETTES["dark"])
         if is_restricted:
             is_checked = self.item_vars[idx].get()
-            bg_color = "#ffcccc" if is_checked else "#ffffff"
-            for w in self.highlight_widgets[idx]:
-                w.config(bg=bg_color)
+            bg_color = p["restricted_bg"] if is_checked else p["row_bg"]
+            fg_color = p["restricted_fg"] if is_checked else p["text_primary"]
+            border_color = p["restricted_border"] if is_checked else p["row_border"]
+            item_frame = self.highlight_widgets[idx][0]
+            title_lbl = self.highlight_widgets[idx][1]
+            item_frame.config(bg=bg_color, highlightbackground=border_color)
+            title_lbl.config(bg=bg_color, fg=fg_color)
 
     def _toggle_single_item(self, idx: int, group_id: str):
         var = self.item_vars.get(idx)
