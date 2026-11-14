@@ -502,33 +502,11 @@ def check_result(page):
 
 # ─── NAVIGATION (CONDITION-BASED WAITS) ──────────────────────
 def go_next(page):
-    finish_selectors = [
-        "input#mod_quiz-next-nav",
-        "input[value='Finish attempt ...']", 
-        "button:has-text('Finish attempt ...')", 
-        "input[name='finishattempt']",
-        "a:has-text('Finish attempt')",
-        "a[href*='summary.php']",
-        "a.endtestlink"
-    ]
-    finish_btn = page.query_selector(", ".join(finish_selectors))
-    
-    if finish_btn:
-        finish_btn.click(force=True)
-        try:
-            page.locator("button:has-text('Submit all and finish'), input[value='Submit all and finish']").first.wait_for(
-                state="visible",
-                timeout=10000
-            )
-        except Exception:
-            page.wait_for_load_state("domcontentloaded")
-        print(" Finish attempt clicked")
-        return "finish"
-
     next_selectors = [
-        "input[name='next']", 
         "input[value='Next page']", 
+        "input[value='Next']", 
         "button:has-text('Next page')",
+        "button:has-text('Next')",
         "a:has-text('Next page')"
     ]
     next_btn = page.query_selector(", ".join(next_selectors))
@@ -545,6 +523,32 @@ def go_next(page):
             page.wait_for_load_state("domcontentloaded")
         print("  Next question\n")
         return "next"
+
+    finish_selectors = [
+        "input[value='Finish attempt ...']", 
+        "input[value='Finish attempt']", 
+        "button:has-text('Finish attempt ...')", 
+        "button:has-text('Finish attempt')",
+        "input[name='finishattempt']",
+        "a:has-text('Finish attempt')",
+        "a[href*='summary.php']",
+        "a.endtestlink",
+        "input#mod_quiz-next-nav",
+        "input[name='next']"
+    ]
+    finish_btn = page.query_selector(", ".join(finish_selectors))
+    
+    if finish_btn:
+        finish_btn.click(force=True)
+        try:
+            page.locator("button:has-text('Submit all and finish'), input[value='Submit all and finish']").first.wait_for(
+                state="visible",
+                timeout=10000
+            )
+        except Exception:
+            page.wait_for_load_state("domcontentloaded")
+        print(" Finish attempt clicked")
+        return "finish"
 
     print(" No navigation button found.")
     return "none"
