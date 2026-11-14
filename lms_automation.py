@@ -749,12 +749,49 @@ def main():
             quiz_page.goto(current_quiz_url, wait_until="domcontentloaded")
             
             # Dynamic SEB check
-            if "This quiz has been configured so that students may only attempt it using the Safe Exam Browser." in quiz_page.content():
+            page_content = quiz_page.content()
+            if "This quiz has been configured so that students may only attempt it using the Safe Exam Browser." in page_content:
                 print("⚠️  Safe Exam Browser required. Skipping this quiz.")
                 skipped_seb_quizzes.append(current_quiz_url)
                 if PERFORMANCE["benchmark"]:
                     benchmark.stop(f"Quiz Execution ({current_quiz_url.split('id=')[-1]})")
                 continue
+
+            # Strict Password Check
+            try:
+                page_content_lower = page_content.lower()
+                has_password_field = quiz_page.locator("input[type='password']").count() > 0
+                if "password" in page_content_lower or "requires password" in page_content_lower or has_password_field:
+                    print("⚠️  Quiz requires a password. Skipping this quiz (strict enforcement).")
+                    if PERFORMANCE["benchmark"]:
+                        benchmark.stop(f"Quiz Execution ({current_quiz_url.split('id=')[-1]})")
+                    continue
+            except Exception:
+                pass
+
+            # Excluded keywords check
+            try:
+                texts_to_check = quiz_page.locator("h1, h2, h3").all_inner_texts()
+                texts_to_check.append(quiz_page.title())
+                texts_to_check_lower = " ".join(texts_to_check).lower()
+                
+                excluded_patterns = [
+                    r"(?:^|\W)cia(?:\d|\W|$)", 
+                    r"(?:^|\W)model(?:\d|\W|$)", 
+                    r"model practical", 
+                    r"practical", 
+                    r"semester", 
+                    r"examination", 
+                    r"exam",
+                    r"(?:^|\W)lab(?:\d|\W|$)"
+                ]
+                if any(re.search(p, texts_to_check_lower) for p in excluded_patterns):
+                    print("⚠️  Quiz name contains excluded keywords (Model, Practical, Semester, etc). Skipping this quiz.")
+                    if PERFORMANCE["benchmark"]:
+                        benchmark.stop(f"Quiz Execution ({current_quiz_url.split('id=')[-1]})")
+                    continue
+            except Exception:
+                pass
 
             # Check if quiz has a finished attempt with score >= MIN_PASSING_PERCENTAGE or if no more attempts are allowed
             status = quiz_page.evaluate(r'''() => {
