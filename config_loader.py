@@ -55,6 +55,8 @@ def load_config():
     config["GEMINI_API_KEY"] = get_val("GEMINI_API_KEY", "GEMINI_API_KEY", prompt_text="Enter Gemini API Key: ", is_secret=True)
     config["EXTENSION_PATH"] = get_val("EXTENSION_PATH", "EXTENSION_PATH")
     config["BROWSER_EXECUTABLE_PATH"] = get_val("BROWSER_EXECUTABLE_PATH", "BROWSER_EXECUTABLE_PATH")
+    config["GEMINI_MODEL"] = get_val("GEMINI_MODEL", "GEMINI_MODEL", default="gemini-3.8-flash")
+    config["GEMINI_THINKING_LEVEL"] = get_val("GEMINI_THINKING_LEVEL", "GEMINI_THINKING_LEVEL", default="HIGH")
     
     return config
 
